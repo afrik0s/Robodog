@@ -2,17 +2,17 @@
 #include "ArduinoJson.h"
 
 #define NUMBER          0 // номер платы двигателя (от 0 до 11)
-#define MIN_POS         0     // границы движения сервопривода в градусах
-#define MAX_POS         270
+#define MIN_POS         14     // границы движения сервопривода в градусах
+#define MAX_POS         150
 #define MIN_MAX_SPEED   30*360/60 // ограничение скорости 30 об/мин, тут же переводим в 180 град/сек   //
 #define MIN_MAX_CURRENT 0.4     // в амперах
 
 #define numberError     0 // затычка под numberError
 
-#define ENCODER_PIN     A1    // пин энкодера AS5600
+#define ENCODER_PIN     A7    // пин энкодера AS5600
 #define CURRENT_SENS_PIN  A2  // пин датчика тока (AC712)
-#define MX1508_IN1_PIN  5     // пины драйвера двигателей
-#define MX1508_IN2_PIN  6
+#define MX1508_IN1_PIN  9     // пины драйвера двигателей
+#define MX1508_IN2_PIN  10
 #define INC_ENCODER_PIN  7
 
 #define ENCODER_SCALE   270.f/1024.f  // макрос перевода угла потенциометра или энкодера из АЦП попугаев [0:1024] в градусы [0:270] 
@@ -111,8 +111,8 @@ void loop(){
     if ((micros()-lastTurn)>10000000){
       RPM = 0;
     }
-    realSpeed = RPM;
-    //realSpeed = (newPosition - realPosition)/dt;  // получаем скорость с оптического энкодера(доделать)
+    //realSpeed = RPM;
+    realSpeed = (newPosition - realPosition)/dt;  // получаем скорость с оптического энкодера(доделать)
     realPosition = newPosition;
     realCurrent = getCurrent();
     
@@ -142,7 +142,7 @@ void loop(){
   Serial.print(numberServo);        // функция отправки данных центральному контроллеру
   Serial.print(",");
   Serial.print(realPosition);
-  Serial.print(",");
+  Serial.print(","); 
   Serial.println(numberError);
 
   // Парсинг трех значений
@@ -229,7 +229,7 @@ float getCurrent(){
   float curr = (analogRead(CURRENT_SENS_PIN) * 5.f/1024.f - 2.5)/CURRENT_SCALE;
   curr = lpFilter(curr, oldCurr, ialpha);   // фильтруем показания с потенциометра, если надо
   oldCurr = curr;
-  return curr;
+  return 0.4;
 }
 
 float getAngle(){ // функция получения угла с потенциометра/энкодера
