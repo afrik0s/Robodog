@@ -1,22 +1,23 @@
+// переделать работу с Шимом, добавить ошибки по скорости и по положению, регулирование 
+//Инк.Энкодер 2 сигнала обработка и фильрация
 // {"numberServo":11, "angle":200, "speed":10, "current":23, "pkp": 16, "pki": 0.0, "pkd": 0.0, "vkp": 0.007, "ikp": 60, "iki": 400} 
 #include "ArduinoJson.h"
 
-#define NUMBER          0 // номер платы двигателя (от 0 до 11)
-#define MIN_POS         14     // границы движения сервопривода в градусах
-#define MAX_POS         150
+#define MIN_POS         12     // границы движения сервопривода в градусах
+#define MAX_POS         139
 #define MIN_MAX_SPEED   30*360/60 // ограничение скорости 30 об/мин, тут же переводим в 180 град/сек   //
 #define MIN_MAX_CURRENT 0.4     // в амперах
 
-#define numberError     0 // затычка под numberError
-
-#define ENCODER_PIN     A7    // пин энкодера AS5600
-#define CURRENT_SENS_PIN  A2  // пин датчика тока (AC712)
-#define MX1508_IN1_PIN  9     // пины драйвера двигателей
-#define MX1508_IN2_PIN  10
-#define INC_ENCODER_PIN  7
+#define ENCODER_PIN     7    // пин энкодера AS5600
+#define CURRENT_SENS_PIN  6  // пин датчика тока (AC712)
+#define MX1508_IN1_PIN  10    // пины драйвера двигателей
+#define MX1508_IN2_PIN  9  
+#define INC_ENCODER_PIN_1 2
+#define INC_ENCODER_PIN_1 3 
 
 #define ENCODER_SCALE   270.f/1024.f  // макрос перевода угла потенциометра или энкодера из АЦП попугаев [0:1024] в градусы [0:270] 
 #define CURRENT_SCALE   0.185  // шкала датчика тока: 0.185В на выходе на 1А 
+#define SPEED_SCALE 1
 
 float palpha = 1.0;
 float ialpha = 0.2;
@@ -26,7 +27,7 @@ float pkI = 0.0;   // интегральный коэффициент PID-рег
 float pkD = 0.0;   // дифференциальный коэффициент PID-регулятора по положинию 
 
 float vkP = 10.0;   // пропорциональный коэффициент PID-регулятора по скорости
-float vkI = 0.04;   // интегральный коэффициент PID-регулятора по скорости    
+float vkI = 0.0;   // интегральный коэффициент PID-регулятора по скорости    
 float vkD = 0.0;   // дифференциальный коэффициент PID-регулятора по скорости
 
 float ikP = 10.0;   // пропорциональный коэффициент PID-регулятора по току
@@ -42,51 +43,40 @@ float position = 0;     // задаваемое положение (градус
 float speed = 0;        // задаваемая PIDом положения скорость сервопривода (градусы/с)
 float current = 0;      // задаваемый PIDом скорости ток сервопривода (амперы)
 int16_t motorPwm = 0;   // заполнение ШИМ, подаваемое на мотор
+int16_t command = 0;
+int16_t error = 0;
 
 float realPosition = 0; // реальное положение сервопривода (градусы)
 float realSpeed = 0;    // реальная скорость сервопривода (градусы/с)
-float realCurrent = 0;  // реальный ток сервопривода (амперы)к
-int RPM;
+float realCurrent = 0;  // реальный ток сервопривода (амперы)
 
 uint32_t pidTimer = 0;  // таймер обновления pid-регулятора
-
-int pinA = 2; // Пины прерываний
-int pinB = 3; // Пины прерываний
-
-volatile long pause    = 50;  // Пауза для борьбы с дребезгом
-volatile long lastTurn = 0;   // Переменная для хранения времени последнего изменения
-
-volatile int count = 0;       // Счетчик оборотов
-int actualcount    = 0;       // Временная переменная определяющая изменение основного счетчика
-
-volatile int state = 0;       // Статус одного шага - от 0 до 4 в одну сторону, от 0 до -4 - в другую
-
-volatile int pinAValue = 0;   // Переменные хранящие состояние пина, для экономии времени
-volatile int pinBValue = 0;   // Переменные хранящие состояние пина, для экономии времени
+uint32_t commTimer = 0;  
+uint32_t errorTimer = 0;
 
 void setup(){
-  Serial.begin(57600);
+  Serial.begin(9600);
   pinMode(ENCODER_PIN, INPUT); 
-  pinMode(INC_ENCODER_PIN, INPUT);
+  pinMode(INC_ENCODER_PIN_1, INPUT);//доделать инк.энкодер
+  pinMode(INC_ENCODER_PIN_1, INPUT);
   pinMode(CURRENT_SENS_PIN, INPUT);
   pinMode(MX1508_IN1_PIN, OUTPUT); 
-  pinMode(MX1508_IN2_PIN, OUTPUT); 
-  
-  pinMode(pinA, INPUT);           // Пины в режим приема INPUT
-  pinMode(pinB, INPUT);           // Пины в режим приема INPUT
+  pinMode(MX1508_IN2_PIN, OUTPUT);
+  //pinMode(pinA, INPUT);           // Пины в режим приема INPUT
+  //pinMode(pinB, INPUT);           // Пины в режим приема INPUT
 
-  attachInterrupt(0, A, CHANGE);  // Настраиваем обработчик прерываний по изменению сигнала
-  attachInterrupt(1, B, CHANGE);  // Настраиваем обработчик прерываний по изменению сигнала
+  //attachInterrupt(0, A, CHANGE);  // Настраиваем обработчик прерываний по изменению сигнала
+  //attachInterrupt(1, B, CHANGE);  // Настраиваем обработчик прерываний по изменению сигнала 
+
   setMotorPwm(0);
   pidTimer = millis();
+  commTimer = millis();
 }
 
 void loop(){
-  if (Serial.available() > 0)
-  {
+  if (Serial.available() > 0){
     DeserializationError err = deserializeJson(jsondoc, Serial);
-    if (err == DeserializationError::Ok)
-    {
+    if (err == DeserializationError::Ok){
       numberServo = (float)jsondoc["numberServo"];
       position = (float)jsondoc["angle"];
       speed = (float)jsondoc["speed"];
@@ -97,21 +87,25 @@ void loop(){
       vkP = (float)jsondoc["vkp"];
       ikP = (float)jsondoc["ikp"];
       ikI = (float)jsondoc["iki"];
+      command = (int)jsondoc["command"];
       position = constrain(position, MIN_POS, MAX_POS); 
     }
   }
   else {while (Serial.available() > 0) Serial.read();}
-  if (numberServo == NUMBER)
-  {
-    numberServo = numberServo + 12;
+  if (millis() - commTimer >= 10){
+    if (command == 1)
+    {
+      position = MIN_POS;
+    }
+    else if (command == 2)
+    {
+      position = MAX_POS;
+    }
+  }
   if (millis() - pidTimer >= 10){   
     // пересчитываем все параметры
     float dt = (millis()-pidTimer)/1000.f;  // пройденное с прошлого раза время
     float newPosition = getAngle(); // получаем новое положение
-    if ((micros()-lastTurn)>10000000){
-      RPM = 0;
-    }
-    //realSpeed = RPM;
     realSpeed = (newPosition - realPosition)/dt;  // получаем скорость с оптического энкодера(доделать)
     realPosition = newPosition;
     realCurrent = getCurrent();
@@ -133,43 +127,16 @@ void loop(){
     
     setMotorPwm(motorPwm);  // подаем ШИМ на мотор
     pidTimer = millis();
+    if (realSpeed != speed)
+    {
+      error = 2;
+    }
     Serial.print(realPosition, DEC); // выводим реальную позицию 
     Serial.print(',');  
     Serial.println(position, DEC);   // и заданное положение
   }
-  }
-  else {return 0;}
-  Serial.print(numberServo);        // функция отправки данных центральному контроллеру
-  Serial.print(",");
-  Serial.print(realPosition);
-  Serial.print(","); 
-  Serial.println(numberError);
-
-  // Парсинг трех значений
-  if (Serial.available() > 0) {
-    String input = Serial.readStringUntil('\n'); // Считываем строку
-    float pos1 = input.indexOf(',');
-    float pos2 = input.indexOf(',', pos1 + 1);
-
-    if (pos1 != -1 && pos2 != -1) {
-      // Парсинг значений
-      String strNumberServo = input.substring(0, pos1);
-      String strAngle = input.substring(pos1 + 1, pos2);
-      String strNumberError = input.substring(pos2 + 1);
-
-      float receivedNumberServo = strNumberServo.toInt();
-      float receivedAngle = strAngle.toInt();
-      float receivedNumberError = strNumberError.toInt();
-
-
-      Serial.print("Received Values: ");
-      Serial.print("numberServo = ");
-      Serial.print(receivedNumberServo);
-      Serial.print(", angle = ");
-      Serial.print(receivedAngle);
-      Serial.print(", numberError = ");
-      Serial.println(receivedNumberError);
-    }
+  if (realPosition != position) {
+    error = 1;
   }
 }
 
@@ -213,7 +180,8 @@ float lpFilter(float value, float oldValue, float alp){
   return oldValue*(1.f-alp)+ alp*value;
 }
 
-void setMotorPwm(int16_t pwm){
+void setMotorPwm(int16_t pwm)//Переделать ШИМ
+{
   if(pwm >= 0){
     analogWrite(MX1508_IN1_PIN, LOW);  
     analogWrite(MX1508_IN2_PIN, abs(pwm));
@@ -229,7 +197,7 @@ float getCurrent(){
   float curr = (analogRead(CURRENT_SENS_PIN) * 5.f/1024.f - 2.5)/CURRENT_SCALE;
   curr = lpFilter(curr, oldCurr, ialpha);   // фильтруем показания с потенциометра, если надо
   oldCurr = curr;
-  return 0.4;
+  return 0.3;
 }
 
 float getAngle(){ // функция получения угла с потенциометра/энкодера
@@ -240,53 +208,12 @@ float getAngle(){ // функция получения угла с потенц�
   return angle;
 }
 
-void A()
-{
-  if (micros() - lastTurn < pause) return;  // Если с момента последнего изменения состояния не прошло
-  // достаточно времени - выходим из прерывания
-  pinAValue = digitalRead(pinA);            // Получаем состояние пинов A и B
-  pinBValue = digitalRead(pinB);
-
-  cli();    // Запрещаем обработку прерываний, чтобы не отвлекаться
-  if (state == 0  && !pinAValue &&  pinBValue || state == 2  && pinAValue && !pinBValue) {
-    state += 1; // Если выполняется условие, наращиваем переменную state
-    lastTurn = micros();
-  }
-  if (state == -1 && !pinAValue && !pinBValue || state == -3 && pinAValue &&  pinBValue) {
-    state -= 1; // Если выполняется условие, наращиваем в минус переменную state
-    lastTurn = micros();
-  }
-  setCount(state); // Проверяем не было ли полного шага из 4 изменений сигналов (2 импульсов)
-  sei(); // Разрешаем обработку прерываний
-
-  if (pinAValue && pinBValue && state != 0) state = 0; // Если что-то пошло не так, возвращаем статус в исходное состояние
+float getSpeed(){ // функция получения скорости с Инк.энкодера
+  static float oldSpeed = 0;
+  float speed = SPEED_SCALE * analogRead(INC_ENCODER_PIN_1);
+  //float speed = SPEED_SCALE * analogRead(INC_ENCODER_PIN_1);
+  speed = lpFilter(speed, oldSpeed, palpha);   // фильтруем показания с потенциометра, если надо
+  oldSpeed = speed;
+  return speed;
 }
-void B()
-{
-  if (micros() - lastTurn < pause) return;
-  pinAValue = digitalRead(pinA);
-  pinBValue = digitalRead(pinB);
-
-  cli();
-  if (state == 1 && !pinAValue && !pinBValue || state == 3 && pinAValue && pinBValue) {
-    state += 1; // Если выполняется условие, наращиваем переменную state
-    lastTurn = micros();
-  }
-  if (state == 0 && pinAValue && !pinBValue || state == -2 && !pinAValue && pinBValue) {
-    state -= 1; // Если выполняется условие, наращиваем в минус переменную state
-    lastTurn = micros();
-  }
-  setCount(state); // Проверяем не было ли полного шага из 4 изменений сигналов (2 импульсов)
-  sei();
-  
-  if (pinAValue && pinBValue && state != 0) state = 0; // Если что-то пошло не так, возвращаем статус в исходное состояние
-}
-
-void setCount(int state) {          // Устанавливаем значение счетчика
-  if (state == 3 || state == -3) {  // Если переменная state приняла заданное значение приращения
-    count += (int)(state / 3);      // Увеличиваем/уменьшаем счетчик
-    lastTurn = micros();
-    RPM = 60/((float)(micros()-lastTurn)/1000000);            // Запоминаем последнее изменение
-  }
-}
-
+// {"numberServo":0, "angle":70, "speed":5, "current":1, "pkp": 16, "pki": 0.0, "pkd": 0.0, "vkp": 0.007, "ikp": 30, "iki": 100} 
